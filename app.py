@@ -1,4 +1,3 @@
-import time
 import numpy as np, pandas as pd, plotly.express as px, plotly.graph_objects as go, streamlit as st
 from plotly.subplots import make_subplots
 from config import CITIES, DB, EVENTS
@@ -27,21 +26,13 @@ h1,h2,h3{font-family:'Sora',sans-serif!important;letter-spacing:-.02em}
 """
 st.markdown(f"<style>{CSS}</style>", unsafe_allow_html=True)
 
-@st.cache_data(ttl=3600, show_spinner="Fetching live air-quality and weather data (about 20 seconds)...")
-def data(refresh):
-    """Live-first: fetch on first run, on button press and hourly; fall back to demo data if offline."""
-    err = None
-    stale = (not DB.exists()) or refresh > 0 or ("Live" in pl.read("meta").source.iloc[0] and time.time() - DB.stat().st_mtime > 3300)
-    if stale:
-        try: pl.build(live=True)
-        except Exception as e:
-            err = str(e)
-            if not DB.exists(): pl.build()
-    out = {t: pl.read(t) for t in ["hourly", "fires_daily", "fire_points", "coverage", "meta"]}; out["err"] = err
-    return out
+@st.cache_data(show_spinner="Building dataset...")
+def data():
+    if not DB.exists(): pl.build()
+    return {t: pl.read(t) for t in ["hourly", "fires_daily", "fire_points", "coverage", "meta"]}
 
 @st.cache_data(show_spinner="Training forecast models (about 20 seconds the first time)...")
-def forecast_city(city, stamp, _H):
+def forecast_city(city, _H):
     return fc.run(_H[_H.city == city])
 
 def style(fig, h=360):
@@ -56,20 +47,15 @@ def kpi(label, val, sub="", color="#f59e0b"):
 def head(t, s):
     st.markdown(f"## {t}"); st.caption(s)
 
-D = data(st.session_state.get("refresh", 0)); H = D["hourly"]; SRC = D["meta"].source.iloc[0]
+D = data(); H = D["hourly"]; SRC = D["meta"].source.iloc[0]
 PAGES = ["Air intelligence", "Forecast centre", "Fire and weather", "CampusShield", "Mobility and exposure", "Policy simulator"]
 with st.sidebar:
     st.markdown('<p class="logo">VAYU</p><div class="tag">From pollution monitoring to pollution-aware decision making</div>', unsafe_allow_html=True)
     page = st.radio("Page", PAGES, label_visibility="collapsed")
     city = st.selectbox("Location", list(CITIES))
     st.markdown(f'<span class="pill">{SRC}</span>', unsafe_allow_html=True)
-    st.caption(f"Latest data point: {H.ts.max():%d %b %Y, %H:%M} IST")
-    if st.button("Refresh live data"):
-        st.session_state["refresh"] = st.session_state.get("refresh", 0) + 1; st.cache_data.clear(); st.rerun()
-    if D["err"]: st.warning(f"Could not fetch live data, showing the last saved or demo data. {D['err']}")
-    st.caption("Air quality: CAMS ENSEMBLE model data via Open-Meteo (about 45 km grid, so nearby cities look similar). Not CPCB station readings.")
 
-c = H[H.city == city]; res = forecast_city(city, str(H.ts.max()), H); p = fc.tomorrow_profile(c, res)
+c = H[H.city == city]; res = forecast_city(city, H); p = fc.tomorrow_profile(c, res)
 last = c.iloc[-1]; prev = c[c.ts <= last.ts - pd.Timedelta(hours=24)].iloc[-1]
 f24 = res["fc"][0]; cat24, col24 = ix.aqi_cat(f24["aqi"]); cat_now, col_now = ix.aqi_cat(last.aqi)
 
@@ -87,15 +73,15 @@ if page == PAGES[0]:
     l, r = st.columns([1, 1.4])
     lead = c.tail(24).aqi.mean(); lb = H[H.ts > last.ts - pd.Timedelta(hours=24)].groupby("city").aqi.mean().sort_values()
     lbd = lb.rename("aqi").reset_index()
-    l.plotly_chart(style(px.bar(lbd, x="aqi", y="city", orientation="h", title="Average AQI, last 24 hours", color="aqi", color_continuous_scale=["#34d399", "#facc15", "#fb923c", "#f43f5e", "#c026d3"]).update_layout(coloraxis_showscale=False, showlegend=False), 400), width="stretch")
+    l.plotly_chart(style(px.bar(lbd, x="aqi", y="city", orientation="h", title="Average AQI, last 24 hours", color="aqi", color_continuous_scale=["#34d399", "#facc15", "#fb923c", "#f43f5e", "#c026d3"]).update_layout(coloraxis_showscale=False, showlegend=False), 400), use_container_width=True)
     dd = H[H.ts > last.ts - pd.Timedelta(days=30)].assign(day=lambda x: x.ts.dt.date).groupby(["day", "city"]).pm25.mean().reset_index()
-    r.plotly_chart(style(px.line(dd, x="day", y="pm25", color="city", title="Daily PM2.5, last 30 days"), 400), width="stretch")
+    r.plotly_chart(style(px.line(dd, x="day", y="pm25", color="city", title="Daily PM2.5, last 30 days"), 400), use_container_width=True)
     hm = H[H.ts > last.ts - pd.Timedelta(days=7)].assign(h=lambda x: x.ts.dt.hour).pivot_table(index="city", columns="h", values="pm25")
-    st.plotly_chart(style(px.imshow(hm, aspect="auto", color_continuous_scale="YlOrRd", title="When is the air worst? Average PM2.5 by hour, last 7 days"), 340), width="stretch")
+    st.plotly_chart(style(px.imshow(hm, aspect="auto", color_continuous_scale="YlOrRd", title="When is the air worst? Average PM2.5 by hour, last 7 days"), 340), use_container_width=True)
     cov = D["coverage"].sort_values("coverage_pct")
     st.markdown("#### Data coverage")
     st.markdown('<div class="note">Monitoring is not uniform, so this shows how much of each city’s raw PM2.5 record was present before gaps up to 12 hours were interpolated. Cities with lower coverage deserve less confidence.</div>', unsafe_allow_html=True)
-    st.plotly_chart(style(px.bar(cov, x="coverage_pct", y="city", orientation="h", range_x=[max(0, cov.coverage_pct.min() - 5), 100], labels={"coverage_pct": "Raw coverage %"}), 300), width="stretch")
+    st.plotly_chart(style(px.bar(cov, x="coverage_pct", y="city", orientation="h", range_x=[max(0, cov.coverage_pct.min() - 5), 100], labels={"coverage_pct": "Raw coverage %"}), 300), use_container_width=True)
 
 # ------------------------------------------------------------------ 2
 elif page == PAGES[1]:
@@ -109,14 +95,14 @@ elif page == PAGES[1]:
     fig.add_trace(go.Scatter(x=[tail.ts.iloc[-1]] + [f["ts"] for f in fs], y=[tail.pm25.iloc[-1]] + [f["pred"] for f in fs], name="Forecast", mode="lines+markers", line=dict(color="#f59e0b", dash="dot"),
                              error_y=dict(type="data", symmetric=False, array=[0] + [f["hi"] - f["pred"] for f in fs], arrayminus=[0] + [f["pred"] - f["lo"] for f in fs])))
     fig.add_hline(y=90, line=dict(color="#f43f5e", dash="dash"), annotation_text="PM2.5 90")
-    st.plotly_chart(style(fig.update_layout(title="Last 7 days and forecast, with 80% intervals"), 380), width="stretch")
+    st.plotly_chart(style(fig.update_layout(title="Last 7 days and forecast, with 80% intervals"), 380), use_container_width=True)
     l, r = st.columns(2)
     bt = res["backtest"]
-    l.plotly_chart(style(px.line(bt, x="ts", y=["Actual", "Predicted", "Persistence"], title="Hold-out check: 24 hour forecast vs actual"), 340), width="stretch")
+    l.plotly_chart(style(px.line(bt, x="ts", y=["Actual", "Predicted", "Persistence"], title="Hold-out check: 24 hour forecast vs actual"), 340), use_container_width=True)
     imp = res["importance"].rename("importance").rename_axis("feature").reset_index()
-    r.plotly_chart(style(px.bar(imp, x="importance", y="feature", orientation="h", title="What drives the model (RandomForest importance)").update_layout(showlegend=False), 340), width="stretch")
+    r.plotly_chart(style(px.bar(imp, x="importance", y="feature", orientation="h", title="What drives the model (RandomForest importance)").update_layout(showlegend=False), 340), use_container_width=True)
     m = res["metrics"]
-    st.dataframe(m.style.format({"MAE": "{:.1f}", "RMSE": "{:.1f}", "R2": "{:.2f}"}), hide_index=True, width="stretch")
+    st.dataframe(m.style.format({"MAE": "{:.1f}", "RMSE": "{:.1f}", "R2": "{:.2f}"}), hide_index=True, use_container_width=True)
     st.markdown('<div class="note">Reading this table honestly: persistence is a strong baseline at 24 hours because air quality changes slowly. The models predict the change from the current level, and a blend with persistence gives the most reliable gain. Beating persistence by more needs weather forecast inputs for the target day, which is the next upgrade.</div>', unsafe_allow_html=True)
 
 # ------------------------------------------------------------------ 3
@@ -130,7 +116,7 @@ elif page == PAGES[2]:
         cs = H[H.ts > last.ts - pd.Timedelta(hours=24)].groupby("city").pm25.mean()
         m.add_trace(go.Scattermap(lat=[CITIES[k][0] for k in cs.index], lon=[CITIES[k][1] for k in cs.index], mode="markers+text", text=[f"{k} {v:.0f}" for k, v in cs.items()], textposition="top right",
                                   marker=dict(size=14, color="#38bdf8"), name="City PM2.5 (24h mean)", textfont=dict(color="#fff")))
-        st.plotly_chart(m.update_layout(margin=dict(l=0, r=0, t=0, b=0), paper_bgcolor="rgba(0,0,0,0)"), width="stretch")
+        st.plotly_chart(m.update_layout(margin=dict(l=0, r=0, t=0, b=0), paper_bgcolor="rgba(0,0,0,0)"), use_container_width=True)
     else:
         st.info("No fire detections loaded. Set the FIRMS_MAP_KEY environment variable and run: python run_pipeline.py --live")
     fd = D["fires_daily"].set_index("date").fires
@@ -140,10 +126,10 @@ elif page == PAGES[2]:
     sf = make_subplots(specs=[[{"secondary_y": True}]])
     sf.add_trace(go.Bar(x=dly.index, y=dly.fires, name="Fire detections", marker_color="#7c2d12"), secondary_y=False)
     sf.add_trace(go.Scatter(x=dly.index, y=dly.pm25, name=f"{city} PM2.5", line=dict(color="#38bdf8")), secondary_y=True)
-    l.plotly_chart(style(sf.update_layout(title="Fire detections vs PM2.5, last 120 days"), 360), width="stretch")
+    l.plotly_chart(style(sf.update_layout(title="Fire detections vs PM2.5, last 120 days"), 360), use_container_width=True)
     dfull = c.assign(date=c.ts.dt.normalize()).groupby("date").pm25.mean()
     lag = {k: dfull.corr(fd.shift(k).reindex(dfull.index)) for k in range(0, 8)}
-    r.plotly_chart(style(px.bar(x=list(lag), y=list(lag.values()), labels={"x": "Days fires lead PM2.5", "y": "Correlation"}, title="Lagged association (not causation)"), 360), width="stretch")
+    r.plotly_chart(style(px.bar(x=list(lag), y=list(lag.values()), labels={"x": "Days fires lead PM2.5", "y": "Correlation"}, title="Lagged association (not causation)"), 360), use_container_width=True)
     w = c.tail(24 * 60).copy(); w["dir"] = (((w.wind_dir + 11.25) // 22.5) % 16).astype(int)
     names = "N NNE NE ENE E ESE SE SSE S SSW SW WSW W WNW NW NNW".split()
     rose = w.groupby("dir").pm25.mean().reset_index().assign(d=lambda x: [names[i] for i in x.dir])
@@ -154,9 +140,9 @@ elif page == PAGES[2]:
             s = dfull[(dfull.index >= t0 + pd.Timedelta(days=a)) & (dfull.index < t0 + pd.Timedelta(days=b)) & (dfull.index <= dfull.index.max())]
             if len(s): ev.append(dict(Event=nm, Phase=ph, PM25=s.mean(), Days=len(s)))
     l, r = st.columns(2)
-    l.plotly_chart(style(px.bar_polar(rose, r="pm25", theta="d", color="pm25", color_continuous_scale="YlOrRd", title="Pollution rose: PM2.5 by wind direction (last 60 days)"), 380), width="stretch")
+    l.plotly_chart(style(px.bar_polar(rose, r="pm25", theta="d", color="pm25", color_continuous_scale="YlOrRd", title="Pollution rose: PM2.5 by wind direction (last 60 days)"), 380), use_container_width=True)
     if ev:
-        r.plotly_chart(style(px.bar(pd.DataFrame(ev), x="Event", y="PM25", color="Phase", barmode="group", title="Pollution events: before, during and after"), 380), width="stretch")
+        r.plotly_chart(style(px.bar(pd.DataFrame(ev), x="Event", y="PM25", color="Phase", barmode="group", title="Pollution events: before, during and after"), 380), use_container_width=True)
 
 # ------------------------------------------------------------------ 4
 elif page == PAGES[3]:
@@ -176,12 +162,12 @@ elif page == PAGES[3]:
     l, r = st.columns([1, 1.5])
     g = go.Figure(go.Indicator(mode="gauge+number", value=score, title={"text": f"Pollution Disruption Index · {lab}"}, gauge=dict(axis=dict(range=[0, 100]), bar=dict(color=lc),
                   steps=[dict(range=[0, 25], color="#12362e"), dict(range=[25, 50], color="#3b3a14"), dict(range=[50, 75], color="#432a14"), dict(range=[75, 100], color="#43141f")])))
-    l.plotly_chart(style(g, 330), width="stretch")
-    r.plotly_chart(style(px.bar(pd.DataFrame({"score": list(comps.values()), "component": list(comps)}), x="score", y="component", orientation="h", range_x=[0, 100], title="What the score is made of").update_layout(showlegend=False), 330), width="stretch")
+    l.plotly_chart(style(g, 330), use_container_width=True)
+    r.plotly_chart(style(px.bar(pd.DataFrame({"score": list(comps.values()), "component": list(comps)}), x="score", y="component", orientation="h", range_x=[0, 100], title="What the score is made of").update_layout(showlegend=False), 330), use_container_width=True)
     st.markdown(f'<div class="rec" style="--c:{lc}">{ix.recommendation(score)}</div>', unsafe_allow_html=True)
     sc = ix.scenario_table(p, start, end, cm, out_h, indoor, shift, hyb, students)
-    st.plotly_chart(style(px.bar(sc, x="Scenario", y=["Campus hours", "Commute"], barmode="stack", title="Estimated exposure per student (µg·h/m³)"), 360), width="stretch")
-    st.dataframe(sc.style.format({"Campus hours": "{:.0f}", "Commute": "{:.0f}", "Avg exposure": "{:.0f}", "Change vs normal %": "{:+.1f}"}), hide_index=True, width="stretch")
+    st.plotly_chart(style(px.bar(sc, x="Scenario", y=["Campus hours", "Commute"], barmode="stack", title="Estimated exposure per student (µg·h/m³)"), 360), use_container_width=True)
+    st.dataframe(sc.style.format({"Campus hours": "{:.0f}", "Commute": "{:.0f}", "Avg exposure": "{:.0f}", "Change vs normal %": "{:+.1f}"}), hide_index=True, use_container_width=True)
     st.markdown('<div class="note">Exposure is estimated ambient PM2.5 × time, adjusted by the indoor factor you set. It is not an inhaled dose, which also depends on breathing rate and indoor conditions. Component weights and the index method are documented in src/indices.py.</div>', unsafe_allow_html=True)
 
 # ------------------------------------------------------------------ 5
@@ -197,10 +183,10 @@ elif page == PAGES[4]:
         e_, mins = expo(dep, m); rows.append({"Mode": m, "Minutes": mins, "Exposure index": e_})
         curves[m] = [expo(h, m)[0] for h in range(5, 23)]
     t = pd.DataFrame(rows).sort_values("Exposure index")
-    st.dataframe(t.style.format({"Minutes": "{:.0f}", "Exposure index": "{:.0f}"}), hide_index=True, width="stretch")
+    st.dataframe(t.style.format({"Minutes": "{:.0f}", "Exposure index": "{:.0f}"}), hide_index=True, use_container_width=True)
     mode = st.selectbox("Mode for the departure-window chart", list(MODES), index=2)
     cv = pd.DataFrame({"Hour": range(5, 23), "Exposure": curves[mode]}); bh = int(cv.loc[cv.Exposure.idxmin(), "Hour"])
-    st.plotly_chart(style(px.bar(cv, x="Hour", y="Exposure", color="Exposure", color_continuous_scale="YlOrRd", title=f"Exposure by departure hour · {mode} · {city}").update_layout(coloraxis_showscale=False), 340), width="stretch")
+    st.plotly_chart(style(px.bar(cv, x="Hour", y="Exposure", color="Exposure", color_continuous_scale="YlOrRd", title=f"Exposure by departure hour · {mode} · {city}").update_layout(coloraxis_showscale=False), 340), use_container_width=True)
     st.markdown(f'<div class="rec" style="--c:#38bdf8">Lowest estimated exposure for this trip: leave at {bh}:00.</div>', unsafe_allow_html=True)
     st.markdown('<div class="note">The in-vehicle factors (bus 0.8, AC car 0.5, metro 0.4) are assumptions you can change in MODES. This estimates ambient exposure along the trip time, not inhaled dose. Route-segment pollution needs a routing API and is on the roadmap.</div>', unsafe_allow_html=True)
 
@@ -221,7 +207,7 @@ else:
     b.markdown(kpi("AQI category", f"{ix.aqi_cat(float(ix.cpcb_aqi(p.mean())))[0]} to {ix.aqi_cat(float(ix.cpcb_aqi(p2.mean())))[0]}", "", "#38bdf8"), unsafe_allow_html=True)
     d_.markdown(kpi("Campus exposure per student", f'{(new["Avg exposure"]/base["Avg exposure"]-1)*100:+.0f}%', "9:00 to 16:00, 45 min commute", "#f59e0b"), unsafe_allow_html=True)
     fig = go.Figure([go.Scatter(x=list(range(24)), y=p, name="Baseline", line=dict(color="#f43f5e")), go.Scatter(x=list(range(24)), y=p2, name="Scenario", line=dict(color="#34d399"))])
-    st.plotly_chart(style(fig.update_layout(title="Estimated hourly PM2.5 tomorrow", xaxis_title="Hour"), 340), width="stretch")
+    st.plotly_chart(style(fig.update_layout(title="Estimated hourly PM2.5 tomorrow", xaxis_title="Hour"), 340), use_container_width=True)
     st.markdown("#### Historical what-if: what does this city's own data say about burning?")
     dly = c.assign(date=c.ts.dt.normalize()).groupby("date").agg(pm=("pm25", "mean"), wind=("wind_speed", "mean"), rh=("rh", "mean"))
     dly["fires"] = D["fires_daily"].set_index("date").fires.shift(1).reindex(dly.index)

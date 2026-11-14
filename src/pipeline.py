@@ -11,27 +11,19 @@ from .indices import cpcb_aqi
 AQ_URL = "https://air-quality-api.open-meteo.com/v1/air-quality"
 WX_URL = "https://api.open-meteo.com/v1/forecast"
 
-def _get(url, params):
+def fetch_live(days=90):
     import requests
-    for attempt in range(3):
-        try:
-            r = requests.get(url, params=params, timeout=60); r.raise_for_status(); return r.json()["hourly"]
-        except Exception as e:
-            if attempt == 2: raise RuntimeError(f"Live fetch failed ({url.split('/')[2]}): {e}")
-
-def fetch_live(days=92):
     frames = []
     for city, (lat, lon, *_) in CITIES.items():
         base = dict(latitude=lat, longitude=lon, past_days=days, forecast_days=1, timezone="Asia/Kolkata")
-        aq = _get(AQ_URL, {**base, "hourly": "pm2_5,pm10"})
-        wx = _get(WX_URL, {**base, "hourly": "temperature_2m,relative_humidity_2m,wind_speed_10m,wind_direction_10m,precipitation"})
+        aq = requests.get(AQ_URL, params={**base, "hourly": "pm2_5,pm10"}, timeout=60).json()["hourly"]
+        wx = requests.get(WX_URL, params={**base, "hourly": "temperature_2m,relative_humidity_2m,wind_speed_10m,wind_direction_10m,precipitation"}, timeout=60).json()["hourly"]
         df = pd.DataFrame({"ts": pd.to_datetime(aq["time"]), "city": city, "pm25": aq["pm2_5"], "pm10": aq["pm10"]})
         w = pd.DataFrame({"ts": pd.to_datetime(wx["time"]), "temp": wx["temperature_2m"], "rh": wx["relative_humidity_2m"],
                           "wind_speed": np.array(wx["wind_speed_10m"], float) / 3.6, "wind_dir": wx["wind_direction_10m"], "rain": wx["precipitation"]})
         frames.append(df.merge(w, on="ts", how="left"))
     h = pd.concat(frames)
-    h = h[h.ts <= pd.Timestamp.now(tz="Asia/Kolkata").tz_localize(None).floor("h")]
-    h = h.dropna(subset=["pm25"])
+    h = h[h.ts <= pd.Timestamp.now().floor("h")]
     fd, fp = _firms(days)
     h["fires"] = h.ts.dt.normalize().map(fd).fillna(0).values
     return h, fd, fp
@@ -96,7 +88,7 @@ def synthetic(days=300, seed=7):
 def build(live=False):
     DATA.mkdir(exist_ok=True); EXPORTS.mkdir(exist_ok=True)
     h, fd, fp = fetch_live() if live else synthetic()
-    src = ("Live: CAMS air quality via Open-Meteo + weather" + (" + NASA FIRMS" if len(fp) else "")) if live else "Demo data (synthetic). Run the pipeline with --live for real data"
+    src = ("Live: Open-Meteo CAMS + weather" + (" + NASA FIRMS" if len(fp) else "")) if live else "Demo data (synthetic). Run the pipeline with --live for real data"
     cov = h.groupby("city").pm25.apply(lambda s: round(s.notna().mean() * 100, 1)).rename("coverage_pct").reset_index()
     h = h.sort_values(["city", "ts"])
     for col in ["pm25", "pm10", "temp", "rh", "wind_speed", "wind_dir"]:
